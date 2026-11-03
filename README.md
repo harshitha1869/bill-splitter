@@ -155,3 +155,16 @@ You must understand every line you submit. We check this with your video and in 
 5. Paste the repository link and the video link in the application form.
 
 We will run `pnpm install && pnpm check && pnpm typecheck && pnpm test` on your repository.
+
+## Decisions
+
+1. **The database decides who pays, not application code.**
+   Payment is a single `UPDATE shares SET paid_at = ?, idempotency_key = ? WHERE id = ? AND bill_id = ? AND paid_at IS NULL`, then I check `meta.changes`. SQLite serializes writes, so two simultaneous requests cannot both match an unpaid row. A "SELECT, then UPDATE if unpaid" approach would let both pass the check. If the update changed 0 rows, I re-read the share: same key returns 200 with the stored result (safe retry), a different key returns 409.
+
+2. **Money is whole cents, split with integer math.**
+   `splitCents` uses `Math.floor` and `%`: everyone gets the base amount and the first `remainder` members (in the order they were added) get one extra cent. Shares always sum to the total. Order is stored in an explicit `position` column because IDs are UUIDs and have no natural order. A total smaller than the member count gives some members 0 cents, so shares allow `>= 0`.
+
+3. **Constraints protect the data even if the API has a bug.**
+   Named constraints include `fk_*` foreign keys, `ck_bills_total_positive`, `ck_shares_paid_pair` (paid_at and idempotency_key are both set or both empty), `uq_shares_bill_member` (no double charge on one bill) and `uq_members_home_position`. A bill and all its shares are written in one `DB.batch` transaction, so a bill never exists with only some of its shares.
+
+**Trade-off:** a member added between reading the members and writing the batch will not get a share on that bill. I accepted this because the bill is split among the members who existed at that moment. **Extra endpoint:** I added `GET /api/homes/:homeId/bills` because the web page needs to list bills.
