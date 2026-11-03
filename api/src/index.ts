@@ -140,6 +140,7 @@ app.post('/api/bills/:billId/shares/:shareId/pay', async (c) => {
   // 1. header check first
   const key = c.req.header('Idempotency-Key')?.trim()
   if (!key) return c.json({ error: 'Idempotency-Key header is required' }, 400)
+  if (key.length > 255) return c.json({ error: 'Idempotency-Key is too long' }, 400)
 
   const billId = c.req.param('billId')
   const shareId = c.req.param('shareId')
