@@ -198,6 +198,58 @@ app.get('/api/homes/:homeId/balances', async (c) => {
   })
 })
 
+
+interface BillRow {
+  id: string
+  title: string
+  total_cents: number
+}
+
+interface BillShareRow {
+  id: string
+  bill_id: string
+  member_id: string
+  amount_cents: number
+  paid_at: string | null
+}
+
+app.get('/api/homes/:homeId/bills', async (c) => {
+  const homeId = c.req.param('homeId')
+  const home = await c.env.DB.prepare('SELECT id FROM homes WHERE id = ?').bind(homeId).first()
+  if (!home) return c.json({ error: 'home not found' }, 404)
+
+  const { results: bills } = await c.env.DB.prepare(
+    'SELECT id, title, total_cents FROM bills WHERE home_id = ? ORDER BY created_at, id',
+  )
+    .bind(homeId)
+    .all<BillRow>()
+
+  const { results: shares } = await c.env.DB.prepare(
+    `SELECT s.id, s.bill_id, s.member_id, s.amount_cents, s.paid_at
+     FROM shares s JOIN bills b ON b.id = s.bill_id
+     WHERE b.home_id = ?
+     ORDER BY s.position`,
+  )
+    .bind(homeId)
+    .all<BillShareRow>()
+
+  return c.json({
+    bills: bills.map((bill) => ({
+      id: bill.id,
+      homeId,
+      title: bill.title,
+      totalCents: bill.total_cents,
+      shares: shares
+        .filter((s) => s.bill_id === bill.id)
+        .map((s) => ({
+          id: s.id,
+          memberId: s.member_id,
+          amountCents: s.amount_cents,
+          paidAt: s.paid_at,
+        })),
+    })),
+  })
+})
 // --- global JSON errors ---
 app.notFound((c) => c.json({ error: 'not found' }, 404))
 app.onError((err, c) => {
