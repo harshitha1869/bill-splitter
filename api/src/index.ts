@@ -118,6 +118,84 @@ app.post('/api/homes/:homeId/bills', async (c) => {
     201,
   )
 })
+interface ShareRow {
+  id: string
+  member_id: string
+  amount_cents: number
+  paid_at: string | null
+  idempotency_key: string | null
+}
+
+interface BalanceRow {
+  member_id: string
+  name: string
+  outstanding_cents: number
+}
+
+function shareResponse(row: ShareRow, paidAt: string) {
+  return { id: row.id, memberId: row.member_id, amountCents: row.amount_cents, paidAt }
+}
+
+app.post('/api/bills/:billId/shares/:shareId/pay', async (c) => {
+  // 1. header check first
+  const key = c.req.header('Idempotency-Key')?.trim()
+  if (!key) return c.json({ error: 'Idempotency-Key header is required' }, 400)
+
+  const billId = c.req.param('billId')
+  const shareId = c.req.param('shareId')
+  const paidAt = new Date().toISOString()
+
+  // 2. let the database decide who wins: only an unpaid row can match
+  const result = await c.env.DB.prepare(
+    `UPDATE shares SET paid_at = ?, idempotency_key = ?
+     WHERE id = ? AND bill_id = ? AND paid_at IS NULL`,
+  )
+    .bind(paidAt, key, shareId, billId)
+    .run()
+
+  // 3. read the row back to build the answer
+  const share = await c.env.DB.prepare(
+    `SELECT id, member_id, amount_cents, paid_at, idempotency_key
+     FROM shares WHERE id = ? AND bill_id = ?`,
+  )
+    .bind(shareId, billId)
+    .first<ShareRow>()
+
+  if (!share || share.paid_at === null) return c.json({ error: 'share not found' }, 404)
+
+  // 4. we won the update
+  if (result.meta.changes === 1) return c.json(shareResponse(share, share.paid_at), 200)
+
+  // 5. already paid: same key is a replay, different key is a conflict
+  if (share.idempotency_key === key) return c.json(shareResponse(share, share.paid_at), 200)
+  return c.json({ error: 'share already paid with a different key' }, 409)
+})
+
+app.get('/api/homes/:homeId/balances', async (c) => {
+  const homeId = c.req.param('homeId')
+  const home = await c.env.DB.prepare('SELECT id FROM homes WHERE id = ?').bind(homeId).first()
+  if (!home) return c.json({ error: 'home not found' }, 404)
+
+  const { results } = await c.env.DB.prepare(
+    `SELECT m.id AS member_id, m.name AS name,
+            COALESCE(SUM(s.amount_cents), 0) AS outstanding_cents
+     FROM members m
+     LEFT JOIN shares s ON s.member_id = m.id AND s.paid_at IS NULL
+     WHERE m.home_id = ?
+     GROUP BY m.id, m.name, m.position
+     ORDER BY m.position`,
+  )
+    .bind(homeId)
+    .all<BalanceRow>()
+
+  return c.json({
+    balances: results.map((row) => ({
+      memberId: row.member_id,
+      name: row.name,
+      outstandingCents: row.outstanding_cents,
+    })),
+  })
+})
 
 // --- global JSON errors ---
 app.notFound((c) => c.json({ error: 'not found' }, 404))
