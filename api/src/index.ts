@@ -198,7 +198,6 @@ app.get('/api/homes/:homeId/balances', async (c) => {
   })
 })
 
-
 interface BillRow {
   id: string
   title: string
